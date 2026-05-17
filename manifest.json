@@ -1,7 +1,7 @@
 {
   "name": "Family Budget",
   "short_name": "Budget",
-  "start_url": ".",
+  "start_url": "budget.html",
   "display": "standalone",
   "background_color": "#0f172a",
   "theme_color": "#0f172a",
