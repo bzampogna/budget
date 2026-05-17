@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Generate Budget App Icons</title>
+  <style>
+    body { font-family: system-ui, sans-serif; background: #0f172a; color: #f1f5f9; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; gap: 20px; margin: 0; }
+    canvas { border-radius: 22%; box-shadow: 0 8px 32px rgba(0,0,0,.5); }
+    button { background: #2563eb; color: #fff; border: none; padding: 14px 32px; border-radius: 10px; font-size: 16px; font-weight: 600; cursor: pointer; }
+    button:hover { background: #1d4ed8; }
+    p { color: #94a3b8; font-size: 14px; text-align: center; max-width: 400px; line-height: 1.6; }
+  </style>
+</head>
+<body>
+  <h2 style="margin:0">Budget App Icon Generator</h2>
+  <canvas id="preview" width="192" height="192"></canvas>
+  <button onclick="downloadAll()">Download All 3 Icons</button>
+  <p>Click the button above. It will download <strong>icon-180.png</strong>, <strong>icon-192.png</strong>, and <strong>icon-512.png</strong>. Move those three files into the same folder as budget.html.</p>
+
+<script>
+function drawIcon(size) {
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d');
+
+  // Background
+  ctx.fillStyle = '#0f172a';
+  ctx.fillRect(0, 0, size, size);
+
+  // Coin circle
+  const cx = size / 2, cy = size / 2, r = size * 0.36;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fillStyle = '#2563eb';
+  ctx.fill();
+
+  // Inner ring
+  ctx.beginPath();
+  ctx.arc(cx, cy, r * 0.82, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+  ctx.lineWidth = size * 0.022;
+  ctx.stroke();
+
+  // Dollar sign
+  ctx.fillStyle = '#ffffff';
+  ctx.font = `bold ${Math.round(size * 0.38)}px -apple-system, system-ui, sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('$', cx, cy + size * 0.015);
+
+  return canvas;
+}
+
+function downloadCanvas(canvas, filename) {
+  const a = document.createElement('a');
+  a.href = canvas.toDataURL('image/png');
+  a.download = filename;
+  a.click();
+}
+
+function downloadAll() {
+  downloadCanvas(drawIcon(180), 'icon-180.png');
+  setTimeout(() => downloadCanvas(drawIcon(192), 'icon-192.png'), 200);
+  setTimeout(() => downloadCanvas(drawIcon(512), 'icon-512.png'), 400);
+}
+
+// Draw preview on page load
+const preview = document.getElementById('preview');
+const ctx = preview.getContext('2d');
+const src = drawIcon(192);
+ctx.drawImage(src, 0, 0);
+</script>
+</body>
+</html>
