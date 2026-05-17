@@ -830,10 +830,12 @@
 // ═══════════════════════════════════════════════════════
 //  CONSTANTS & CONFIG
 // ═══════════════════════════════════════════════════════
-const API_KEY  = '$2a$10$J0E3f7KPiK51CxmX/dKy3.j73fikk7i/Cjna5GwR31IRPYirNDMNK';
 const API_BASE = 'https://api.jsonbin.io/v3/b';
 const LS_DATA  = 'fam_budget_v1';
 const LS_BIN   = 'budget_bin_id';
+const LS_KEY   = 'budget_api_key';
+
+function getApiKey() { return localStorage.getItem(LS_KEY) || ''; }
 
 const MONTHS_LONG  = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 const MONTHS_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -859,9 +861,9 @@ let S = {
   billsMo:    {y: now.getFullYear(), m: now.getMonth()},
   spendMo:    {y: now.getFullYear(), m: now.getMonth()},
   reportsMo:  {y: now.getFullYear(), m: now.getMonth()},
-  spendView:  'cats',    // 'cats' | 'txns'
+  spendView:  'cats',
   selCatId:   null,
-  syncStatus: 'idle',    // idle | syncing | synced | error
+  syncStatus: 'idle',
   editIncome: false,
   data: {
     bills:        [],
@@ -872,7 +874,6 @@ let S = {
   }
 };
 
-// temp flags for modal state (avoid closures in onclick strings)
 let _modalState = {};
 
 // ═══════════════════════════════════════════════════════
@@ -912,7 +913,7 @@ function todayStr() {
   return new Date().toISOString().slice(0,10);
 }
 
-function h(str) { // escape HTML
+function h(str) {
   return String(str ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
@@ -944,12 +945,18 @@ async function pushToCloud(force = false) {
   clearTimeout(_syncTimer);
   if (!force) { _syncTimer = setTimeout(() => pushToCloud(true), 600); return; }
 
+  // No API key — save locally and prompt setup
+  if (!getApiKey()) {
+    saveLocal();
+    return;
+  }
+
   setSyncStatus('syncing');
   saveLocal();
 
-  const binId = getBinId();
-  const headers = { 'Content-Type':'application/json', 'X-Master-Key': API_KEY };
-  const body = JSON.stringify(S.data);
+  const binId  = getBinId();
+  const headers = { 'Content-Type':'application/json', 'X-Master-Key': getApiKey() };
+  const body    = JSON.stringify(S.data);
 
   try {
     let resp;
@@ -972,10 +979,11 @@ async function pushToCloud(force = false) {
 }
 
 async function pullFromCloud(binId) {
+  if (!getApiKey()) { setSyncStatus('idle'); return false; }
   setSyncStatus('syncing');
   try {
     const resp = await fetch(`${API_BASE}/${binId}/latest`, {
-      headers: { 'X-Master-Key': API_KEY }
+      headers: { 'X-Master-Key': getApiKey() }
     });
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     const json = await resp.json();
@@ -1005,8 +1013,10 @@ function normalize(d) {
 }
 
 async function initApp() {
-  const binId = getBinId();
-  if (binId) {
+  const binId  = getBinId();
+  const hasKey = !!getApiKey();
+
+  if (binId && hasKey) {
     const ok = await pullFromCloud(binId);
     if (!ok) {
       const cached = loadLocal();
@@ -1015,10 +1025,9 @@ async function initApp() {
   } else {
     const cached = loadLocal();
     if (cached) S.data = normalize(cached);
-    // Create a bin for this device
-    pushToCloud(true);
   }
-  setSyncStatus(getBinId() ? 'synced' : 'idle');
+
+  setSyncStatus((binId && hasKey) ? 'synced' : 'idle');
   render();
 }
 
@@ -1261,7 +1270,6 @@ function buildReportsTab() {
   const totalSpend = txns.reduce((s,t)=>s+Number(t.amount), 0);
 
   const bills = S.data.bills.filter(b => b.recurring || b.history?.[mk]);
-  const totalBudgeted = bills.reduce((s,b)=>s+Number(b.budgetedAmount||0), 0);
   const totalPaid = bills.reduce((s,b) => {
     const hist = b.history?.[mk]||{};
     return s + (hist.paid ? Number(hist.actualAmount ?? b.budgetedAmount ?? 0) : 0);
@@ -1619,12 +1627,10 @@ function deleteBill(billId) {
 function openAddTxModal(prefillCatId = null) {
   const cats = S.data.categories;
   if (!cats.length) return toast('Add a category first in Settings', 'err');
-  // When called from spending tab, suggest current month's date
   const defaultDate = (() => {
     const mo = S.spendMo;
     const now2 = new Date();
     if (mo.y === now2.getFullYear() && mo.m === now2.getMonth()) return todayStr();
-    // Use last day of that month
     const last = new Date(mo.y, mo.m + 1, 0);
     return `${last.getFullYear()}-${String(last.getMonth()+1).padStart(2,'0')}-${String(last.getDate()).padStart(2,'0')}`;
   })();
@@ -1683,8 +1689,33 @@ function deleteTx(txId) {
 //  SYNC MODAL
 // ═══════════════════════════════════════════════════════
 function openSyncModal() {
-  const binId = getBinId();
-  const status = { idle:'—', syncing:'Syncing…', synced:'Up to date ✓', error:'Error ✗' }[S.syncStatus] || '';
+  const binId  = getBinId();
+  const hasKey = !!getApiKey();
+  const statusLabel = {
+    idle:    'Not configured',
+    syncing: 'Syncing…',
+    synced:  'Up to date ✓',
+    error:   'Error — check your key or Bin ID'
+  }[S.syncStatus] || '';
+
+  const connectedHtml = (hasKey && binId) ? `
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;padding:10px 12px;background:rgba(74,222,128,.08);border:1px solid rgba(74,222,128,.2);border-radius:10px">
+      <div class="sync-dot synced" style="flex-shrink:0"></div>
+      <span class="fs13" style="color:var(--success);font-weight:500">${statusLabel}</span>
+    </div>
+    <div class="fg">
+      <label class="flabel">Your Bin ID</label>
+      <div class="bin-display">${h(binId)}</div>
+      <button class="btn-s" onclick="copyBinId('${h(binId)}')">📋 Copy Bin ID</button>
+    </div>
+    <div class="divider mt12"></div>
+    <p class="fs13 text-muted" style="margin:10px 0 14px;line-height:1.5">Update credentials or connect to a different bin below.</p>
+  ` : `
+    <div style="padding:12px 14px;background:rgba(251,191,36,.08);border:1px solid rgba(251,191,36,.2);border-radius:10px;margin-bottom:16px">
+      <div class="fs13" style="color:var(--warning);font-weight:600;margin-bottom:4px">Cloud sync not set up</div>
+      <div class="fs12 text-muted" style="line-height:1.5">Enter your JSONBin API key and an optional Bin ID to enable sync across devices.</div>
+    </div>
+  `;
 
   showModal(`
     <div class="box">
@@ -1693,50 +1724,75 @@ function openSyncModal() {
         <button class="modal-x" onclick="closeModal()">✕</button>
       </div>
       <div class="modal-body">
+        ${connectedHtml}
         <div class="fg">
-          <label class="flabel">Status</label>
-          <div style="font-size:14px;color:var(--muted);margin-bottom:12px">${status}</div>
-          <label class="flabel">Your Bin ID</label>
-          ${binId
-            ? `<div class="bin-display">${h(binId)}</div>
-               <button class="btn-s" onclick="copyBinId('${h(binId)}')">📋 Copy Bin ID</button>`
-            : `<div class="bin-display" style="font-style:italic;color:var(--muted)">Not yet created — save some data first.</div>
-               <button class="btn-s" onclick="closeModal();pushToCloud(true)">Create Bin Now</button>`}
+          <label class="flabel">JSONBin Master Key</label>
+          <input id="sync-apikey" class="finput" type="password"
+            placeholder="$2a$10$…"
+            value="${h(getApiKey())}">
         </div>
-        <div class="fg mt16">
-          <label class="flabel">Connect Another Phone</label>
-          <input id="conn-bin" class="finput" type="text" placeholder="Paste partner's Bin ID here…">
-          <button class="btn-p" onclick="connectBin()">Connect &amp; Load Data</button>
+        <div class="fg">
+          <label class="flabel">Bin ID <span style="font-weight:400;text-transform:none;letter-spacing:0;font-size:11px">(leave blank to create a new one)</span></label>
+          <input id="sync-binid" class="finput" type="text"
+            placeholder="Paste bin ID to connect an existing budget…"
+            value="${h(binId || '')}">
         </div>
+        <button class="btn-p" onclick="saveAndSync()">${(hasKey && binId) ? 'Update &amp; Sync' : 'Connect &amp; Sync'}</button>
+        ${(hasKey || binId) ? `
+        <div style="height:8px"></div>
+        <button class="btn-d" onclick="disconnectCloud()">Disconnect Cloud</button>
+        ` : ''}
         <div class="sync-info">
-          Share your Bin ID with your partner. They paste it here to connect to the same budget. Changes on either phone sync automatically.
+          Get a free API key at <strong>jsonbin.io</strong> → API Keys → Create Key.<br>
+          Share your Bin ID with a partner so both phones sync to the same budget.
         </div>
         <div style="height:8px"></div>
       </div>
     </div>`, true);
 }
 
+async function saveAndSync() {
+  const key   = document.getElementById('sync-apikey')?.value.trim();
+  const binId = document.getElementById('sync-binid')?.value.trim();
+
+  if (!key) return toast('Enter your JSONBin Master Key', 'err');
+
+  localStorage.setItem(LS_KEY, key);
+
+  if (binId) {
+    setBinId(binId);
+    closeModal();
+    toast('Connecting…', 'ok');
+    const ok = await pullFromCloud(binId);
+    if (ok) { toast('Connected! Data loaded.', 'ok'); render(); }
+    else    { toast('Could not connect — check your key & Bin ID', 'err'); }
+  } else {
+    closeModal();
+    toast('Creating cloud bin…', 'ok');
+    await pushToCloud(true);
+    if (getBinId()) {
+      toast('Cloud sync active!', 'ok');
+      renderHeader();
+    } else {
+      toast('Could not create bin — check your API key', 'err');
+    }
+  }
+}
+
+function disconnectCloud() {
+  if (!confirm('Disconnect from cloud sync?\n\nYour local data will be kept.')) return;
+  localStorage.removeItem(LS_KEY);
+  localStorage.removeItem(LS_BIN);
+  S.syncStatus = 'idle';
+  closeModal();
+  renderHeader();
+  toast('Disconnected from cloud', 'ok');
+}
+
 function copyBinId(id) {
   navigator.clipboard.writeText(id)
     .then(() => toast('Bin ID copied!', 'ok'))
     .catch(() => toast('Copy failed — please copy manually', 'err'));
-}
-
-async function connectBin() {
-  const id = document.getElementById('conn-bin')?.value.trim();
-  if (!id) return toast('Paste a Bin ID first', 'err');
-  closeModal();
-  setBinId(id);
-  toast('Connecting…', 'ok');
-  const ok = await pullFromCloud(id);
-  if (ok) {
-    toast('Connected! Data loaded.', 'ok');
-    render();
-  } else {
-    toast('Could not connect — check the Bin ID', 'err');
-    localStorage.removeItem(LS_BIN);
-    setSyncStatus('error');
-  }
 }
 
 // ═══════════════════════════════════════════════════════
