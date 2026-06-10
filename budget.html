@@ -891,6 +891,20 @@ function nextMo(mo) {
 function moLabel(mo) {
   return `${MONTHS_LONG[mo.m]} ${mo.y}`;
 }
+function moLabelFromKey(mk) {
+  const [y,m] = mk.split('-');
+  return `${MONTHS_LONG[+m-1]} ${y}`;
+}
+
+// A bill belongs to a month if it has a history entry for it, or it's
+// recurring and hasn't been ended before that month ("YYYY-MM" keys
+// compare correctly as strings).
+function billActiveInMonth(bill, mk) {
+  if (bill.history && mk in bill.history) return true;
+  if (!bill.recurring) return false;
+  if (bill.endMonth && mk > bill.endMonth) return false;
+  return true;
+}
 
 function fmt$(n) {
   if (n == null) return '—';
@@ -1093,9 +1107,8 @@ function buildBillsTab() {
   const today = new Date();
   today.setHours(0,0,0,0);
 
-  const bills = S.data.bills.filter(b =>
-    b.recurring || (b.history && mk in b.history)
-  ).sort((a,b) => a.dueDay - b.dueDay);
+  const bills = S.data.bills.filter(b => billActiveInMonth(b, mk))
+    .sort((a,b) => a.dueDay - b.dueDay);
 
   let paidCount = 0, remaining = 0;
   bills.forEach(b => {
@@ -1269,7 +1282,7 @@ function buildReportsTab() {
   const txns = S.data.transactions.filter(t => t.date?.startsWith(mk));
   const totalSpend = txns.reduce((s,t)=>s+Number(t.amount), 0);
 
-  const bills = S.data.bills.filter(b => b.recurring || b.history?.[mk]);
+  const bills = S.data.bills.filter(b => billActiveInMonth(b, mk));
   const totalPaid = bills.reduce((s,b) => {
     const hist = b.history?.[mk]||{};
     return s + (hist.paid ? Number(hist.actualAmount ?? b.budgetedAmount ?? 0) : 0);
@@ -1410,7 +1423,7 @@ function buildMomTable(curMo) {
     const mk  = moKey(mo);
     const txns = S.data.transactions.filter(t => t.date?.startsWith(mk));
     const spend = txns.reduce((s,t)=>s+Number(t.amount), 0);
-    const bills = S.data.bills.filter(b => b.recurring || b.history?.[mk]);
+    const bills = S.data.bills.filter(b => billActiveInMonth(b, mk));
     const paid  = bills.reduce((s,b) => {
       const hist = b.history?.[mk]||{};
       return s + (hist.paid ? Number(hist.actualAmount ?? b.budgetedAmount ?? 0) : 0);
@@ -1568,7 +1581,7 @@ function openBillDetail(billId) {
           <span>·</span>
           <span>Budget: ${fmt$(bill.budgetedAmount)}</span>
           <span>·</span>
-          <span>${bill.recurring ? '🔁 Recurring' : 'One-time'}</span>
+          <span>${bill.recurring ? (bill.endMonth ? `🔁 Recurring · ended ${moLabelFromKey(bill.endMonth)}` : '🔁 Recurring') : 'One-time'}</span>
         </div>
         <div class="fg">
           <label class="flabel">Status</label>
@@ -1589,6 +1602,9 @@ function openBillDetail(billId) {
         </div>
         <button class="btn-p" onclick="saveBillDetail(${billId})">Save Changes</button>
         <div style="height:10px"></div>
+        ${bill.recurring ? (bill.endMonth
+          ? `<button class="btn-s" onclick="resumeBill(${billId})">Resume Recurring</button><div style="height:10px"></div>`
+          : `<button class="btn-s" onclick="endBill(${billId})">End Bill (stop recurring, keep history)</button><div style="height:10px"></div>`) : ''}
         <button class="btn-d" onclick="deleteBill(${billId})">Delete Bill</button>
         <div style="height:8px"></div>
       </div>
@@ -1615,8 +1631,28 @@ function saveBillDetail(billId) {
   closeModal(); renderContent(); pushToCloud(); toast('Bill updated!', 'ok');
 }
 
+function endBill(billId) {
+  const bill = S.data.bills.find(b => b.id === billId);
+  if (!bill) return;
+  const mo = S.billsMo;
+  if (!confirm(`End "${bill.name}" as of ${moLabel(mo)}?\n\nIt will still show in this and earlier months, but won't appear in later months. Payment history is kept.`)) return;
+  bill.endMonth = moKey(mo);
+  closeModal(); renderContent(); pushToCloud(); toast('Bill ended — history kept', 'ok');
+}
+
+function resumeBill(billId) {
+  const bill = S.data.bills.find(b => b.id === billId);
+  if (!bill) return;
+  delete bill.endMonth;
+  closeModal(); renderContent(); pushToCloud(); toast('Bill resumed', 'ok');
+}
+
 function deleteBill(billId) {
-  if (!confirm('Delete this bill permanently?')) return;
+  const bill = S.data.bills.find(b => b.id === billId);
+  const warn = bill?.recurring
+    ? 'Delete this bill permanently?\n\nThis erases its entire payment history from ALL months. To cancel a recurring bill but keep its history, use "End Bill" instead.'
+    : 'Delete this bill permanently?\n\nThis erases its payment history too.';
+  if (!confirm(warn)) return;
   S.data.bills = S.data.bills.filter(b => b.id !== billId);
   closeModal(); renderContent(); pushToCloud(); toast('Bill deleted', 'ok');
 }
