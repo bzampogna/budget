@@ -1,0 +1,26 @@
+name: Bill reminders
+
+on:
+  schedule:
+    # 12:00 UTC = 8:00 AM Eastern (7:00 AM during winter/EST).
+    # GitHub cron is UTC and may run a few minutes late.
+    - cron: '0 12 * * *'
+  workflow_dispatch: {}   # allows manual test runs from the Actions tab
+
+permissions: {}
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install --no-save web-push@3
+      - run: node scripts/send-reminders.mjs
+        env:
+          JSONBIN_KEY: ${{ secrets.JSONBIN_KEY }}
+          JSONBIN_BIN_ID: ${{ secrets.JSONBIN_BIN_ID }}
+          VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
+          TZ: America/New_York
