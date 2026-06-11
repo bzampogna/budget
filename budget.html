@@ -836,6 +836,11 @@ const LS_DATA  = 'fam_budget_v1';
 const LS_BIN   = 'budget_bin_id';
 const LS_KEY   = 'budget_api_key';
 
+// Public half of the VAPID pair used by the bill-reminders GitHub Action.
+// If you regenerate the keys, update this AND the VAPID_PRIVATE_KEY repo
+// secret AND the copy in scripts/send-reminders.mjs together.
+const VAPID_PUBLIC_KEY = 'BM7mJKLvnmdaHuhWDG8CNbA7uHWfRafXBVl66E7e_O1C6svwe2e_4K-42oWRhikeJpNo3Y48XXFZRhleOpwA4o0';
+
 function getApiKey() { return localStorage.getItem(LS_KEY) || ''; }
 
 const MONTHS_LONG  = ['January','February','March','April','May','June','July','August','September','October','November','December'];
@@ -871,7 +876,9 @@ let S = {
     categories:   DEFAULT_CATS.map(c => ({...c})),
     transactions: [],
     income:       8000,
-    settings:     {}
+    settings:     {},
+    pushSubs:     [],
+    notifyDays:   3
   }
 };
 
@@ -1023,7 +1030,9 @@ function normalize(d) {
                     : DEFAULT_CATS.map(c => ({...c})),
     transactions: Array.isArray(d.transactions) ? d.transactions : [],
     income:       typeof d.income === 'number'  ? d.income       : 8000,
-    settings:     d.settings || {}
+    settings:     d.settings || {},
+    pushSubs:     Array.isArray(d.pushSubs)     ? d.pushSubs     : [],
+    notifyDays:   typeof d.notifyDays === 'number' ? d.notifyDays : 3
   };
 }
 
@@ -1060,6 +1069,7 @@ function renderContent() {
   if (S.tab === 'bills')    el.innerHTML = buildBillsTab();
   else if (S.tab === 'spending') el.innerHTML = buildSpendingTab();
   else if (S.tab === 'reports')  el.innerHTML = buildReportsTab();
+  updateAppBadge();
 }
 
 function renderHeader() {
@@ -1833,6 +1843,145 @@ function copyBinId(id) {
 }
 
 // ═══════════════════════════════════════════════════════
+//  BILL REMINDERS (Web Push + app badge)
+// ═══════════════════════════════════════════════════════
+function urlB64ToUint8(b64) {
+  const pad = '='.repeat((4 - b64.length % 4) % 4);
+  const raw = atob((b64 + pad).replace(/-/g,'+').replace(/_/g,'/'));
+  return Uint8Array.from(raw, c => c.charCodeAt(0));
+}
+
+function pushSupported() {
+  return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+}
+
+async function getPushSub() {
+  if (!pushSupported()) return null;
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    return await reg.pushManager.getSubscription();
+  } catch(e) { return null; }
+}
+
+// Bills unpaid in the current real month and due within `notifyDays`
+// (or already overdue) — shared by the badge and the reminders modal.
+function dueSoonBills() {
+  const today = new Date(); today.setHours(0,0,0,0);
+  const mk = moKey({y: today.getFullYear(), m: today.getMonth()});
+  const lastDay = new Date(today.getFullYear(), today.getMonth()+1, 0).getDate();
+  const days = S.data.notifyDays ?? 3;
+  return S.data.bills.filter(b => {
+    if (!billActiveInMonth(b, mk)) return false;
+    if (b.history?.[mk]?.paid) return false;
+    const due = new Date(today.getFullYear(), today.getMonth(), Math.min(b.dueDay, lastDay));
+    const diff = Math.round((due - today) / 86400000);
+    return diff <= days;
+  });
+}
+
+function updateAppBadge() {
+  if (!('setAppBadge' in navigator)) return;
+  const n = dueSoonBills().length;
+  (n > 0 ? navigator.setAppBadge(n) : navigator.clearAppBadge()).catch(()=>{});
+}
+
+async function openNotifyModal() {
+  const supported = pushSupported();
+  const standalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+  const synced = !!(getApiKey() && getBinId());
+  const sub = await getPushSub();
+  const enabled = !!sub;
+  const days = S.data.notifyDays ?? 3;
+
+  let statusHtml;
+  if (!supported && !standalone) {
+    statusHtml = `<div class="sync-info" style="margin-top:0">On iPhone, push notifications only work after you add this app to your Home Screen (Share → Add to Home Screen) and open it from there.</div>`;
+  } else if (!supported) {
+    statusHtml = `<div class="sync-info" style="margin-top:0">This browser doesn't support push notifications.</div>`;
+  } else if (!synced) {
+    statusHtml = `<div class="sync-info" style="margin-top:0">Set up <strong>Cloud Sync</strong> first — reminders are sent by checking your synced data each morning.</div>`;
+  } else {
+    statusHtml = enabled
+      ? `<div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;padding:10px 12px;background:rgba(74,222,128,.08);border:1px solid rgba(74,222,128,.2);border-radius:10px">
+           <div class="sync-dot synced" style="flex-shrink:0"></div>
+           <span class="fs13" style="color:var(--success);font-weight:500">Reminders on for this device</span>
+         </div>`
+      : `<div style="padding:12px 14px;background:rgba(251,191,36,.08);border:1px solid rgba(251,191,36,.2);border-radius:10px;margin-bottom:16px">
+           <div class="fs13" style="color:var(--warning);font-weight:600;margin-bottom:4px">Reminders are off</div>
+           <div class="fs12 text-muted" style="line-height:1.5">Get a morning notification when bills are coming up or overdue.</div>
+         </div>`;
+  }
+
+  const canToggle = supported && synced;
+  const dayOpts = [1,2,3,5,7].map(d =>
+    `<option value="${d}"${d===days?' selected':''}>${d} day${d>1?'s':''} before</option>`).join('');
+
+  showModal(`
+    <div class="box">
+      <div class="modal-hdr">
+        <span class="modal-title">🔔 Bill Reminders</span>
+        <button class="modal-x" onclick="closeModal()">✕</button>
+      </div>
+      <div class="modal-body">
+        ${statusHtml}
+        <div class="fg">
+          <label class="flabel">Remind Me</label>
+          <select id="notify-days" class="fselect" ${canToggle?'':'disabled'} onchange="saveNotifyDays(this.value)">
+            ${dayOpts}
+          </select>
+        </div>
+        ${canToggle ? (enabled
+          ? `<button class="btn-d" onclick="disableNotifications()">Turn Off on This Device</button>`
+          : `<button class="btn-p" onclick="enableNotifications()">Turn On Notifications</button>`) : ''}
+        <div class="sync-info">
+          Reminders arrive each morning for unpaid bills due within your chosen window (overdue bills included). Enable on each phone that should get them.
+        </div>
+        <div style="height:8px"></div>
+      </div>
+    </div>`, true);
+}
+
+function saveNotifyDays(v) {
+  S.data.notifyDays = parseInt(v) || 3;
+  updateAppBadge(); pushToCloud(); toast('Reminder window saved', 'ok');
+}
+
+async function enableNotifications() {
+  try {
+    const perm = await Notification.requestPermission();
+    if (perm !== 'granted') return toast('Notifications were not allowed', 'err');
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlB64ToUint8(VAPID_PUBLIC_KEY)
+    });
+    const json = sub.toJSON();
+    S.data.pushSubs = (S.data.pushSubs||[]).filter(s => s.endpoint !== json.endpoint);
+    S.data.pushSubs.push(json);
+    pushToCloud(true);
+    updateAppBadge();
+    closeModal(); openNotifyModal(); toast('Reminders on!', 'ok');
+  } catch(e) {
+    console.warn('Push subscribe failed:', e);
+    toast('Could not enable notifications', 'err');
+  }
+}
+
+async function disableNotifications() {
+  try {
+    const sub = await getPushSub();
+    if (sub) {
+      S.data.pushSubs = (S.data.pushSubs||[]).filter(s => s.endpoint !== sub.endpoint);
+      await sub.unsubscribe();
+      pushToCloud(true);
+    }
+    closeModal(); openNotifyModal(); toast('Reminders off', 'ok');
+  } catch(e) {
+    toast('Could not turn off notifications', 'err');
+  }
+}
+
+// ═══════════════════════════════════════════════════════
 //  SETTINGS MODAL
 // ═══════════════════════════════════════════════════════
 function openSettingsModal() {
@@ -1861,6 +2010,8 @@ function openSettingsModal() {
         </div>
         <div style="padding:0 20px">
           <button class="btn-s" onclick="closeModal();openSyncModal()">☁ Cloud Sync</button>
+          <div style="height:8px"></div>
+          <button class="btn-s" onclick="closeModal();openNotifyModal()">🔔 Bill Reminders</button>
         </div>
         <div style="height:12px"></div>
       </div>

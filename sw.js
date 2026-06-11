@@ -1,4 +1,4 @@
-const CACHE_NAME = 'family-budget-v3';
+const CACHE_NAME = 'family-budget-v4';
 const ASSETS = [
   './',
   'budget.html',
@@ -29,5 +29,30 @@ self.addEventListener('fetch', e => {
   if (!e.request.url.startsWith(self.location.origin)) return;
   e.respondWith(
     caches.match(e.request).then(cached => cached || fetch(e.request))
+  );
+});
+
+self.addEventListener('push', e => {
+  let data = {};
+  try { data = e.data.json(); } catch (err) {}
+  e.waitUntil(
+    self.registration.showNotification(data.title || '💰 Bill reminder', {
+      body: data.body || 'You have bills due soon.',
+      icon: 'icon-192.png',
+      tag: 'bill-reminder',
+      data: { url: 'budget.html' }
+    })
+  );
+});
+
+self.addEventListener('notificationclick', e => {
+  e.notification.close();
+  e.waitUntil(
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then(wins => {
+      for (const w of wins) {
+        if (w.url.includes('budget.html') && 'focus' in w) return w.focus();
+      }
+      return clients.openWindow('budget.html');
+    })
   );
 });
