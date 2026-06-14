@@ -904,14 +904,40 @@ function moLabelFromKey(mk) {
   return `${MONTHS_LONG[+m-1]} ${y}`;
 }
 
+// Recurring frequency options (interval in months).
+const FREQ_OPTS = [
+  {v:1,  label:'Monthly'},
+  {v:2,  label:'Every 2 months'},
+  {v:3,  label:'Quarterly (every 3 months)'},
+  {v:6,  label:'Every 6 months'},
+  {v:12, label:'Annually'},
+];
+function freqLabel(f) {
+  return ({1:'Monthly',2:'Every 2 months',3:'Quarterly',6:'Every 6 months',12:'Annually'})[f||1] || `Every ${f} months`;
+}
+function freqOptionsHtml(sel) {
+  return FREQ_OPTS.map(o => `<option value="${o.v}"${o.v===(sel||1)?' selected':''}>${o.label}</option>`).join('');
+}
+function monthsBetweenKeys(a, b) {
+  const [ay,am] = a.split('-').map(Number);
+  const [by,bm] = b.split('-').map(Number);
+  return (by-ay)*12 + (bm-am);
+}
+
 // A bill belongs to a month if it has a history entry for it, or it's
 // recurring and hasn't been ended before that month ("YYYY-MM" keys
-// compare correctly as strings).
+// compare correctly as strings). Bills that recur less often than monthly
+// only appear in months that line up with their cycle from anchorMonth.
 function billActiveInMonth(bill, mk) {
   if (bill.history && mk in bill.history) return true;
   if (!bill.recurring) return false;
   if (bill.endMonth && mk > bill.endMonth) return false;
-  return true;
+  const freq = bill.freqMonths || 1;
+  if (freq === 1) return true;
+  const anchor = bill.anchorMonth;
+  if (!anchor) return true;           // missing anchor → don't hide it
+  if (mk < anchor) return false;
+  return monthsBetweenKeys(anchor, mk) % freq === 0;
 }
 
 function fmt$(n) {
@@ -1182,7 +1208,7 @@ function buildBillItem(bill, mk, today) {
       <div class="bill-dot" style="background:${STATUS_DOT[status]}"></div>
       <div class="bill-info">
         <div class="bill-name">${h(bill.name)}</div>
-        <div class="bill-sub">Due the ${ordinal(bill.dueDay)} · ${h(bill.category||'Other')}</div>
+        <div class="bill-sub">Due the ${ordinal(bill.dueDay)} · ${h(bill.category||'Other')}${(bill.recurring && (bill.freqMonths||1) > 1) ? ' · '+freqLabel(bill.freqMonths) : ''}</div>
       </div>
       <div class="bill-right">
         <div class="bill-amount">${fmt$(bill.budgetedAmount)}</div>
@@ -1535,9 +1561,19 @@ function openAddBillModal() {
         <div class="fg">
           <label class="flabel">Recurring</label>
           <div class="toggle-row">
-            <button id="rec-y" class="tog-btn on" onclick="setRec(true)">✓ Yes (every month)</button>
+            <button id="rec-y" class="tog-btn on" onclick="setRec(true)">✓ Yes</button>
             <button id="rec-n" class="tog-btn"    onclick="setRec(false)">One-time</button>
           </div>
+        </div>
+        <div class="fg" id="b-freq-wrap">
+          <label class="flabel">Frequency</label>
+          <select id="b-freq" class="fselect" onchange="toggleAnchor('b-freq','b-anchor-wrap')">
+            ${freqOptionsHtml(1)}
+          </select>
+        </div>
+        <div class="fg" id="b-anchor-wrap" style="display:none">
+          <label class="flabel">First Due Month</label>
+          <input id="b-anchor" class="finput" type="month" value="${moKey(S.billsMo)}">
         </div>
         <button class="btn-p" onclick="saveBill()">Add Bill</button>
         <div style="height:8px"></div>
@@ -1549,6 +1585,16 @@ function setRec(val) {
   _modalState.recurring = val;
   document.getElementById('rec-y').classList.toggle('on', val);
   document.getElementById('rec-n').classList.toggle('on', !val);
+  document.getElementById('b-freq-wrap').style.display = val ? '' : 'none';
+  if (val) toggleAnchor('b-freq','b-anchor-wrap');
+  else     document.getElementById('b-anchor-wrap').style.display = 'none';
+}
+
+// Show the "first due month" picker only when the chosen frequency is
+// less often than monthly.
+function toggleAnchor(freqSelId, anchorWrapId) {
+  const f = parseInt(document.getElementById(freqSelId).value) || 1;
+  document.getElementById(anchorWrapId).style.display = f > 1 ? '' : 'none';
 }
 
 function saveBill() {
@@ -1561,12 +1607,19 @@ function saveBill() {
   if (isNaN(amt) || amt < 0)            return toast('Enter a valid amount', 'err');
   if (isNaN(day) || day < 1 || day > 31) return toast('Enter a valid due day (1–31)', 'err');
 
-  S.data.bills.push({
+  const recurring = _modalState.recurring !== false;
+  const freq = recurring ? (parseInt(document.getElementById('b-freq').value) || 1) : 1;
+  const bill = {
     id: Date.now(), name, budgetedAmount: amt, dueDay: day,
     category: cat || 'Other',
-    recurring: _modalState.recurring !== false,
+    recurring,
     history: {}
-  });
+  };
+  if (recurring && freq > 1) {
+    bill.freqMonths  = freq;
+    bill.anchorMonth = document.getElementById('b-anchor').value || moKey(S.billsMo);
+  }
+  S.data.bills.push(bill);
   closeModal(); renderContent(); pushToCloud(); toast('Bill added!', 'ok');
 }
 
@@ -1592,7 +1645,7 @@ function openBillDetail(billId) {
           <span>·</span>
           <span>Budget: ${fmt$(bill.budgetedAmount)}</span>
           <span>·</span>
-          <span>${bill.recurring ? (bill.endMonth ? `🔁 Recurring · ended ${moLabelFromKey(bill.endMonth)}` : '🔁 Recurring') : 'One-time'}</span>
+          <span>${bill.recurring ? ('🔁 '+freqLabel(bill.freqMonths)+(bill.endMonth ? ` · ended ${moLabelFromKey(bill.endMonth)}` : '')) : 'One-time'}</span>
         </div>
         <div class="fg">
           <label class="flabel">Status</label>
@@ -1611,6 +1664,17 @@ function openBillDetail(billId) {
           <label class="flabel">Date Paid</label>
           <input id="b-pdate" class="finput" type="date" value="${hist.paidDate || todayStr()}">
         </div>
+        ${bill.recurring ? `
+        <div class="fg">
+          <label class="flabel">Frequency</label>
+          <select id="bd-freq" class="fselect" onchange="toggleAnchor('bd-freq','bd-anchor-wrap')">
+            ${freqOptionsHtml(bill.freqMonths)}
+          </select>
+        </div>
+        <div class="fg" id="bd-anchor-wrap" style="display:${(bill.freqMonths||1) > 1 ? '' : 'none'}">
+          <label class="flabel">First Due Month</label>
+          <input id="bd-anchor" class="finput" type="month" value="${bill.anchorMonth || moKey(S.billsMo)}">
+        </div>` : ''}
         <button class="btn-p" onclick="saveBillDetail(${billId})">Save Changes</button>
         <div style="height:10px"></div>
         ${bill.recurring ? (bill.endMonth
@@ -1639,6 +1703,16 @@ function saveBillDetail(billId) {
     actualAmount: isNaN(actual) ? null : actual,
     paidDate:     document.getElementById('b-pdate').value || null
   };
+  if (bill.recurring) {
+    const freq = parseInt(document.getElementById('bd-freq').value) || 1;
+    if (freq > 1) {
+      bill.freqMonths  = freq;
+      bill.anchorMonth = document.getElementById('bd-anchor').value || bill.anchorMonth || mk;
+    } else {
+      delete bill.freqMonths;
+      delete bill.anchorMonth;
+    }
+  }
   closeModal(); renderContent(); pushToCloud(); toast('Bill updated!', 'ok');
 }
 
