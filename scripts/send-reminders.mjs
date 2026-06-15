@@ -28,11 +28,21 @@ const subs = Array.isArray(data.pushSubs) ? data.pushSubs : [];
 if (!subs.length) { console.log('No devices subscribed — nothing to do.'); process.exit(0); }
 
 // ── Find unpaid bills due within the window (mirrors budget.html) ──
+function monthsBetweenKeys(a, b) {
+  const [ay, am] = a.split('-').map(Number);
+  const [by, bm] = b.split('-').map(Number);
+  return (by - ay) * 12 + (bm - am);
+}
 function billActiveInMonth(bill, mk) {
   if (bill.history && mk in bill.history) return true;
   if (!bill.recurring) return false;
   if (bill.endMonth && mk > bill.endMonth) return false;
-  return true;
+  const freq = bill.freqMonths || 1;
+  if (freq === 1) return true;
+  const anchor = bill.anchorMonth;
+  if (!anchor) return true;
+  if (mk < anchor) return false;
+  return monthsBetweenKeys(anchor, mk) % freq === 0;
 }
 
 const today = new Date(); today.setHours(0, 0, 0, 0);
